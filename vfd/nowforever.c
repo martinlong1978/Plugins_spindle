@@ -32,9 +32,8 @@
 
 #include "spindle.h"
 
-static uint32_t modbus_address;
+static uint32_t modbus_address, freq_min = 0, freq_max = 0, exceptions = 0;
 static spindle_id_t spindle_id;
-static uint32_t freq_min = 0, freq_max = 0;
 static spindle_ptrs_t *spindle_hal = NULL;
 static spindle_data_t spindle_data = {0};
 static spindle_state_t vfd_state = {0};
@@ -60,7 +59,7 @@ static bool spindleConfig (spindle_ptrs_t *spindle)
 
 // Read maximum configured RPM from spindle, value is used later for calculating current RPM
 // In the case of the original Huanyang protocol, the value is the configured RPM at 50Hz
-static void spindleGetRPMRange (void)
+static void spindleGetRPMRange (void *data)
 {
     modbus_message_t cmd = {
         .context = (void *)VFD_GetRPMRange,
@@ -200,6 +199,7 @@ static void rx_packet (modbus_message_t *msg)
         switch((vfd_response_t)msg->context) {
 
             case VFD_GetRPM:
+                exceptions = 0;
                 if(msg->adu[2] == 2)
                     spindle_validate_at_speed(spindle_data, f2rpm((msg->adu[3] << 8) | msg->adu[4]));
                 break;
@@ -222,7 +222,10 @@ static void rx_packet (modbus_message_t *msg)
 
 static void rx_exception (uint8_t code, void *context)
 {
-    vfd_failed(false);
+    if((vfd_response_t)context != VFD_GetRPM || ++exceptions == VFD_ASYNC_EXCEPTION_LEVEL) {
+        exceptions = 0;
+        vfd_failed(false);
+    }
 }
 
 static void onReportOptions (bool newopt)
@@ -230,7 +233,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("Nowforever VFD", "0.02");
+        report_plugin("Nowforever VFD", "0.04");
 }
 
 static void onDriverReset (void)
@@ -238,7 +241,7 @@ static void onDriverReset (void)
     driver_reset();
 
     if(spindle_hal)
-        spindleGetRPMRange();
+        task_add_delayed(spindleGetRPMRange, NULL, 50);
 }
 
 static void onSpindleSelected (spindle_ptrs_t *spindle)
@@ -251,7 +254,7 @@ static void onSpindleSelected (spindle_ptrs_t *spindle)
         modbus_set_silence(NULL);
         modbus_address = vfd_get_modbus_address(spindle_id);
 
-        spindleGetRPMRange();
+        spindleGetRPMRange(NULL);
 
     } else
         spindle_hal = NULL;

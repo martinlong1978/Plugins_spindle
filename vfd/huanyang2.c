@@ -30,7 +30,7 @@
 
 #include "spindle.h"
 
-static uint32_t modbus_address, rpm_max = 0;
+static uint32_t modbus_address, rpm_max = 0, exceptions = 0;
 static spindle_id_t spindle_id = -1;
 static spindle_ptrs_t *spindle_hal = NULL;
 static spindle_state_t vfd_state = {0};
@@ -52,7 +52,7 @@ static const modbus_callbacks_t callbacks = {
 
 // Read maximum configured RPM from spindle, value is used later for calculating current RPM
 // In the case of the original Huanyang protocol, the value is the configured RPM at 50Hz
-static void spindleGetMaxRPM (void)
+static void spindleGetMaxRPM (void *data)
 {
     modbus_message_t cmd = {
         .context = (void *)VFD_GetMaxRPM,
@@ -77,7 +77,7 @@ static void set_rpm (float rpm, bool block)
     if(busy && !block)
         return;
 
-    if (rpm != spindle_data.rpm_programmed) {
+    if(rpm_max && rpm != spindle_data.rpm_programmed) {
 
         uint16_t data = (uint32_t)(rpm) * 10000UL / rpm_max;
 
@@ -174,6 +174,7 @@ static void rx_packet (modbus_message_t *msg)
         switch((vfd_response_t)msg->context) {
 
             case VFD_GetRPM:
+                exceptions = 0;
                 spindle_validate_at_speed(spindle_data, (float)((msg->adu[4] << 8) | msg->adu[5]));
                 break;
 
@@ -203,9 +204,10 @@ static spindle_data_t *spindleGetData (spindle_data_request_t request)
 
 static void rx_exception (uint8_t code, void *context)
 {
-    // Alarm needs to be raised directly to correctly handle an error during reset (the rt command queue is
-    // emptied on a warm reset). Exception is during cold start, where alarms need to be queued.
-    vfd_failed(false);
+    if((vfd_response_t)context != VFD_GetRPM || ++exceptions == VFD_ASYNC_EXCEPTION_LEVEL) {
+        exceptions = 0;
+        vfd_failed(false);
+    }
 }
 
 static void onReportOptions (bool newopt)
@@ -213,7 +215,7 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("HUANYANG P2A VFD", "0.12");
+        report_plugin("HUANYANG P2A VFD", "0.14");
 }
 
 static void onDriverReset (void)
@@ -221,7 +223,7 @@ static void onDriverReset (void)
     driver_reset();
 
     if(spindle_hal)
-        spindleGetMaxRPM();
+        task_add_delayed(spindleGetMaxRPM, NULL, 50);
 }
 
 static void onSpindleSelected (spindle_ptrs_t *spindle)
@@ -233,7 +235,7 @@ static void onSpindleSelected (spindle_ptrs_t *spindle)
 
         modbus_address = vfd_get_modbus_address(spindle_id);
 
-        spindleGetMaxRPM();
+        spindleGetMaxRPM(NULL);
 
     } else
         spindle_hal = NULL;

@@ -30,6 +30,7 @@
 #include "grbl/state_machine.h"
 #include "grbl/report.h"
 #include "grbl/modbus.h"
+#include "grbl/task.h"
 
 #include "spindle/shared.h"
 
@@ -38,6 +39,9 @@
 #endif
 #ifndef VFD_RETRY_DELAY
 #define VFD_RETRY_DELAY 100
+#endif
+#ifndef VFD_ASYNC_EXCEPTION_LEVEL
+#define VFD_ASYNC_EXCEPTION_LEVEL 10
 #endif
 #define VFD_N_ADRESSES  4
 

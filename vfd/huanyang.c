@@ -30,7 +30,7 @@
 
 #include "spindle.h"
 
-static uint32_t modbus_address;
+static uint32_t modbus_address, exceptions = 0;
 static float amps = 0.0f, amps_max = 0.0f, rpm_at_50Hz = 0.0f;
 static spindle_id_t spindle_id = -1;
 static spindle_ptrs_t *spindle_hal = NULL;
@@ -122,9 +122,9 @@ static void set_rpm (float rpm, bool block)
     if(busy && !block)
         return;
 
-    if(rpm != spindle_data.rpm_programmed) {
+    if(rpm_at_50Hz != 0.0f && rpm != spindle_data.rpm_programmed) {
 
-        uint32_t data = lroundf(rpm * 5000.0f / (float)rpm_at_50Hz); // send Hz * 10  (Ex:1500 RPM = 25Hz .... Send 2500)
+        uint32_t data = lroundf(rpm * 5000.0f / rpm_at_50Hz); // send Hz * 10  (Ex:1500 RPM = 25Hz .... Send 2500)
 
         modbus_message_t rpm_cmd = {
             .context = (void *)VFD_SetRPM,
@@ -235,6 +235,7 @@ static void rx_packet (modbus_message_t *msg)
         switch((vfd_response_t)msg->context) {
 
             case VFD_GetRPM:
+                exceptions = 0;
                 spindle_validate_at_speed(spindle_data, (float)((msg->adu[4] << 8) | msg->adu[5]) * rpm_at_50Hz / 5000.0f);
                 break;
 
@@ -286,7 +287,10 @@ static spindle_data_t *spindleGetData (spindle_data_request_t request)
 
 static void rx_exception (uint8_t code, void *context)
 {
-    vfd_failed(false);
+    if(!((vfd_response_t)context == VFD_GetRPM || (vfd_response_t)context == VFD_GetAmps) || ++exceptions == VFD_ASYNC_EXCEPTION_LEVEL) {
+        exceptions = 0;
+        vfd_failed(false);
+    }
 }
 
 static void onReportOptions (bool newopt)
@@ -294,18 +298,21 @@ static void onReportOptions (bool newopt)
     on_report_options(newopt);
 
     if(!newopt)
-        report_plugin("HUANYANG VFD", "0.14");
+        report_plugin("HUANYANG VFD", "0.16");
+}
+
+static void after_reset (void *data)
+{
+    spindleGetRPMLimits();
+    spindleGetMaxAmps();
 }
 
 static void onDriverReset (void)
 {
     driver_reset();
 
-    if(spindle_hal) {
-
-        spindleGetRPMLimits();
-        spindleGetMaxAmps();
-    }
+    if(spindle_hal)
+        task_add_delayed(after_reset, NULL, 50);
 }
 
 static void onSpindleSelected (spindle_ptrs_t *spindle)
